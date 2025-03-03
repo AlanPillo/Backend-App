@@ -6,18 +6,18 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
 const cron = require('node-cron');
-const crypto = require('crypto'); // para generar el token de confirmación, si lo necesitas
+const crypto = require('crypto'); 
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// 📌 Clave JWT (puedes moverla a .env si lo prefieres)
+//  Clave JWT 
 const SECRET_KEY = 'secreto_super_seguro';
 
-// 📌 Configuración de PostgreSQL
+//  Configuración de PostgreSQL
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL, // Ej: postgresql://postgres:Developer2314@localhost:5432/dentaldb
+  connectionString: process.env.DATABASE_URL, 
   ssl: process.env.DATABASE_SSL ? { rejectUnauthorized: false } : false
 });
 console.log('📌 DATABASE_URL:', process.env.DATABASE_URL);
@@ -53,7 +53,7 @@ async function enviarCorreo(opciones) {
   }
 }
 
-// Función para generar HTML elegante para los correos
+// Función para generar HTML
 function generarHtmlCorreo({ nombre, fechaFormateada, hora, waLink, mensajeAdicional }) {
   return `
     <!DOCTYPE html>
@@ -107,7 +107,7 @@ cron.schedule('0 9 * * *', async () => {
     const dd = String(fechaRecordatorio.getDate()).padStart(2, '0');
     const fechaTarget = `${yyyy}-${mm}-${dd}`;
 
-    // Buscar citas para la fecha objetivo con estado 'abierto'
+   
     const citas = await pool.query(`
       SELECT c.id AS cita_id, c.fecha, c.hora, p.email, p.nombre
       FROM citas c
@@ -280,7 +280,7 @@ app.put('/api/pacientes/:id', verificarToken, async (req, res) => {
 
 // 🔹 Rutas de Citas
 
-// Función para formatear fecha: "13 de marzo del 2025"
+// Función para formatear fecha:
 function formatearFecha(fechaISO) {
   const dateObj = new Date(fechaISO);
   const day = dateObj.getDate();
@@ -317,7 +317,7 @@ app.post('/api/citas', verificarToken, async (req, res) => {
     return res.status(400).json({ error: 'La cita debe ser agendada para un día posterior a hoy' });
   }
   try {
-    // Generar un token único para el enlace de recordatorio (opcional)
+    // Generar un token único para el enlace de recordatorio
     const tokenConfirmacion = crypto.randomBytes(20).toString('hex');
     // Insertar la cita en la BD (confirmada: false, asistio: NULL, estado: 'abierto')
     const result = await pool.query(
@@ -333,7 +333,7 @@ app.post('/api/citas', verificarToken, async (req, res) => {
     // Generar enlace de WhatsApp para problemas (mensaje predefinido)
     const mensaje = encodeURIComponent(`Hola, buenas. Soy ${nombre}, desafortunadamente no puedo asistir a mi cita programada para el ${fechaFormateada} a las ${hora}.`);
     const waLink = `https://wa.me/59891014583?text=${mensaje}`;
-    // Enviar correo de aviso de nueva cita (HTML) con imagen de ejemplo y enlace a WhatsApp
+    // Enviar correo de aviso de nueva cita HTML con imagen de ejemplo y enlace a WhatsApp
     const htmlCorreo = `
       <!DOCTYPE html>
       <html lang="es">
