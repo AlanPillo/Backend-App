@@ -794,6 +794,10 @@ app.get('/api/citas/historial/:paciente_id', verificarToken, async (req, res) =>
   }
 });
 
+app.get('/ping', (req, res) => {
+  res.status(200).send('pong');
+});
+
 // ────────────────────────────────────────────────
 // Endpoint para verificar que el servidor esté activo
 // ────────────────────────────────────────────────
