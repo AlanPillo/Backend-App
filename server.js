@@ -3,21 +3,25 @@ const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
 const cron = require('node-cron');
-const crypto = require('crypto'); 
+const bcrypt = require('bcryptjs');
+
+// Ejemplo para generar hash (solo para verificación en consola)
+bcrypt.hash('hola', 10).then(hash => {
+  console.log("Hash de ejemplo para contraseña hola:", hash);
+});
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-//  Clave JWT 
+// 📌 Clave JWT (puedes moverla a .env si lo prefieres)
 const SECRET_KEY = 'secreto_super_seguro';
 
-//  Configuración de PostgreSQL
+// 📌 Configuración de PostgreSQL
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL, 
+  connectionString: process.env.DATABASE_URL, // Ej: postgresql://usuario:password@host:puerto/db
   ssl: process.env.DATABASE_SSL ? { rejectUnauthorized: false } : false
 });
 console.log('📌 DATABASE_URL:', process.env.DATABASE_URL);
@@ -53,49 +57,9 @@ async function enviarCorreo(opciones) {
   }
 }
 
-// Función para generar HTML
-function generarHtmlCorreo({ nombre, fechaFormateada, hora, waLink, mensajeAdicional }) {
-  return `
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-      <meta charset="UTF-8" />
-      <style>
-        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 0; }
-        .container { max-width: 600px; margin: 40px auto; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 20px; }
-        .header { text-align: center; padding-bottom: 20px; border-bottom: 1px solid #eee; }
-        .header h2 { margin: 0; color: #1976d2; }
-        .content { padding: 20px 0; }
-        .content p { margin: 10px 0; font-size: 16px; }
-        .footer { text-align: center; padding-top: 20px; border-top: 1px solid #eee; font-size: 14px; color: #777; }
-        .btn-wa { display: inline-block; background-color: #25D366; color: #fff; padding: 12px 24px; margin-top: 20px; text-decoration: none; border-radius: 4px; font-weight: bold; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <div class="header">
-          <h2>Recordatorio de Cita</h2>
-        </div>
-        <div class="content">
-          <p>Hola <strong>${nombre}</strong>,</p>
-          <p>${mensajeAdicional || 'Este es un recordatorio de que tienes una cita programada.'}</p>
-          <p><strong>Fecha:</strong> ${fechaFormateada}</p>
-          <p><strong>Hora:</strong> ${hora} hrs</p>
-          <p>Si tienes algún inconveniente, por favor contacta vía WhatsApp haciendo clic en el botón de abajo:</p>
-          <div style="text-align: center;">
-            <a href="${waLink}" class="btn-wa">Contactar WhatsApp</a>
-          </div>
-        </div>
-        <div class="footer">
-          <p>Gracias por confiar en nosotros.</p>
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
-}
-
-// 🔹 Tarea programada: enviar recordatorio 48 horas antes de la cita (diariamente a las 09:00 AM)
+// ────────────────────────────────────────────────
+// CRON: Tarea programada para enviar recordatorio 48 horas antes de la cita
+// ────────────────────────────────────────────────
 cron.schedule('0 9 * * *', async () => {
   console.log("⏰ Ejecutando tarea de recordatorio 48hs...");
   try {
@@ -107,27 +71,96 @@ cron.schedule('0 9 * * *', async () => {
     const dd = String(fechaRecordatorio.getDate()).padStart(2, '0');
     const fechaTarget = `${yyyy}-${mm}-${dd}`;
 
-   
+    // Buscar citas abiertas para la fecha objetivo
     const citas = await pool.query(`
-      SELECT c.id AS cita_id, c.fecha, c.hora, p.email, p.nombre
+      SELECT 
+        c.id AS cita_id, 
+        c.fecha, 
+        c.hora, 
+        p.email, 
+        p.nombre AS paciente_nombre, 
+        cl.telefono AS cliente_telefono,
+        cl.nombre AS cliente_nombre
       FROM citas c
       JOIN pacientes p ON c.paciente_id = p.id
+      JOIN cliente cl ON p.cliente_id = cl.id
       WHERE to_char(c.fecha, 'YYYY-MM-DD') = $1 AND c.estado = 'abierto'
     `, [fechaTarget]);
 
     for (const cita of citas.rows) {
-      const { cita_id, fecha, hora, email, nombre } = cita;
-      // Generar enlace de WhatsApp predefinido
-      const mensaje = encodeURIComponent(`Hola, buenas. Soy ${nombre}, desafortunadamente no puedo asistir a mi cita programada para el ${fecha.toString().split('T')[0]} a las ${hora}.`);
-      const waLink = `https://wa.me/59891014583?text=${mensaje}`;
-
-      const html = generarHtmlCorreo({
-        nombre,
-        fechaFormateada: fecha.toString().split('T')[0],
-        hora,
-        waLink
-      });
-
+      const { fecha, hora, email, paciente_nombre, cliente_telefono, cliente_nombre } = cita;
+      const fechaStr = fecha.toString().split('T')[0];
+      const telStr = String(cliente_telefono).trim();
+      const formattedPhone = telStr.startsWith('0') ? `598${telStr.slice(1)}` : telStr;
+      const mensajeWa = `En caso de no poder asistir a la cita, anula aquí:\n\nPaciente: ${paciente_nombre}\nFecha: ${fechaStr}\nHora: ${hora} hs\nCliente: ${cliente_nombre}`;
+      const waLink = `https://wa.me/${formattedPhone}?text=${encodeURIComponent(mensajeWa)}`;
+      
+      const html = `
+      <!DOCTYPE html>
+      <html lang="es">
+      <head>
+        <meta charset="UTF-8" />
+        <title>Recordatorio de Cita</title>
+        <style>
+          body { 
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; 
+            background-color: #f5f5f5; 
+            color: #333; 
+            margin: 0; 
+            padding: 0; 
+          }
+          .container { 
+            max-width: 600px; 
+            margin: 40px auto; 
+            background-color: #fff; 
+            border-radius: 8px; 
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1); 
+            overflow: hidden;
+          }
+          .header { 
+            text-align: center; 
+            padding: 25px; 
+            background: linear-gradient(135deg, #1976d2, #2196f3);
+            color: #fff;
+          }
+          .header h2 { margin: 0; font-size: 24px; }
+          .content { padding: 20px 30px; }
+          .content p { margin: 10px 0; font-size: 16px; }
+          .details { margin-top: 25px; padding-top: 15px; border-top: 1px solid #ddd; }
+          .details-item { margin-bottom: 10px; }
+          .details-item span.label { font-weight: bold; color: #666; }
+          .alert-text { text-align: center; font-size: 16px; font-weight: bold; color: #d32f2f; margin-top: 20px; }
+          .btn-wa { display: block; width: 60%; margin: 15px auto 0; text-align: center; background-color: #d32f2f; color: #fff; padding: 14px 0; border-radius: 30px; font-weight: 700; text-decoration: none; transition: background 0.3s ease; }
+          .btn-wa:hover { background-color: #b71c1c; }
+          .footer { text-align: center; font-size: 14px; color: #777; padding: 15px; border-top: 1px solid #eee; background-color: #f9f9f9; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h2>Recordatorio de Cita</h2>
+          </div>
+          <div class="content">
+            <p><strong>Paciente:</strong> ${paciente_nombre}</p>
+            <div class="details">
+              <div class="details-item">
+                <span class="label">Fecha:</span> ${fechaStr}
+              </div>
+              <div class="details-item">
+                <span class="label">Hora:</span> ${hora} hs
+              </div>
+            </div>
+            <div class="alert-text">En caso de no poder asistir a la cita ingresar aquí:</div>
+            <a href="${waLink}" class="btn-wa">ANULAR CITA</a>
+          </div>
+          <div class="footer">
+            <p>Gracias por confiar en nosotros.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+      `;
+      
       await enviarCorreo({
         from: process.env.EMAIL_USER,
         to: email,
@@ -141,13 +174,9 @@ cron.schedule('0 9 * * *', async () => {
   }
 });
 
-// 🔹 MODO DE PRUEBA: Enviar recordatorio 5 minutos después de la reserva (si TEST_MODE es true)
-const TEST_MODE = process.env.TEST_MODE === 'true';
-if (TEST_MODE) {
-  console.log("⚠️ Modo de prueba activado: se enviará un recordatorio 5 minutos después de la reserva");
-}
-
-// 🔐 Middleware para verificar token (JWT)
+// ────────────────────────────────────────────────
+// Middleware para verificar token (JWT)
+// ────────────────────────────────────────────────
 const verificarToken = (req, res, next) => {
   const token = req.headers['authorization']?.split(" ")[1];
   if (!token) {
@@ -157,48 +186,219 @@ const verificarToken = (req, res, next) => {
     if (err) {
       return res.status(401).json({ error: 'Token inválido' });
     }
-    req.user = decoded;
+    req.user = decoded; // { id: <user_id>, role: 'cliente' o 'owner' }
     next();
   });
 };
 
-// 🔹 Iniciar sesión (solo para el dentista)
+// ────────────────────────────────────────────────
+// LOGIN ENDPOINTS
+// ────────────────────────────────────────────────
 app.post('/api/login', async (req, res) => {
   const { nombre, password } = req.body;
   try {
-    console.log("🟡 Intento de login para:", nombre);
-    const result = await pool.query('SELECT * FROM dentista WHERE nombre = $1', [nombre]);
+    console.log("🟡 Intento de login para cliente:", nombre);
+    const result = await pool.query('SELECT * FROM cliente WHERE nombre = $1', [nombre]);
     if (result.rows.length === 0) {
-      console.error("❌ Dentista no encontrado.");
+      console.error("❌ Cliente no encontrado.");
       return res.status(401).json({ error: 'Credenciales incorrectas' });
     }
-    const dentista = result.rows[0];
-    const isMatch = await bcrypt.compare(password, dentista.password_hash);
+    const usuario = result.rows[0];
+    const isMatch = await bcrypt.compare(password, usuario.password_hash);
     if (!isMatch) {
       console.error("❌ Contraseña incorrecta.");
       return res.status(401).json({ error: 'Credenciales incorrectas' });
     }
-    const token = jwt.sign({ id: dentista.id, role: 'admin' }, SECRET_KEY, { expiresIn: '8h' });
-    console.log("✅ Token generado correctamente.");
+    const token = jwt.sign({ id: usuario.id, role: 'cliente' }, SECRET_KEY, { expiresIn: '8h' });
+    console.log("✅ Token generado correctamente para cliente.");
     res.json({ message: 'Inicio de sesión exitoso', token });
   } catch (error) {
-    console.error('❌ Error en el login:', error);
+    console.error('❌ Error en el login de cliente:', error);
     res.status(500).json({ error: 'Error interno en el servidor' });
   }
 });
 
-// 🔹 Rutas de Pacientes
+app.post('/api/owner/login', async (req, res) => {
+  const { nombre, password } = req.body;
+  try {
+    console.log("🟡 Intento de login para owner:", nombre);
+    const result = await pool.query('SELECT * FROM owner WHERE nombre = $1', [nombre]);
+    if (result.rows.length === 0) {
+      console.error("❌ Owner no encontrado.");
+      return res.status(401).json({ error: 'Credenciales incorrectas' });
+    }
+    const usuario = result.rows[0];
+    const isMatch = await bcrypt.compare(password, usuario.password_hash);
+    if (!isMatch) {
+      console.error("❌ Contraseña incorrecta.");
+      return res.status(401).json({ error: 'Credenciales incorrectas' });
+    }
+    const token = jwt.sign({ id: usuario.id, role: 'owner' }, SECRET_KEY, { expiresIn: '8h' });
+    console.log("✅ Token generado correctamente para owner.");
+    res.json({ message: 'Inicio de sesión exitoso', token });
+  } catch (error) {
+    console.error('❌ Error en el login de owner:', error);
+    res.status(500).json({ error: 'Error interno en el servidor' });
+  }
+});
 
-// Agregar un nuevo paciente (PROTEGIDO)
+// ────────────────────────────────────────────────
+// ENDPOINTS PARA OWNER
+// ────────────────────────────────────────────────
+app.get('/api/owner/clientes/:id', verificarToken, async (req, res) => {
+  if (req.user.role !== 'owner') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo el owner puede ver el cliente.' });
+  }
+  const { id } = req.params;
+  try {
+    const result = await pool.query('SELECT * FROM cliente WHERE id = $1', [id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Cliente no encontrado' });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("❌ Error al obtener cliente:", error);
+    res.status(500).json({ error: 'Error al obtener cliente' });
+  }
+});
+
+app.post('/api/clientes', verificarToken, async (req, res) => {
+  if (req.user.role !== 'owner') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo el owner puede crear clientes.' });
+  }
+  const { nombre, password, direccion, telefono, profesion } = req.body;
+  if (!nombre || !password) {
+    return res.status(400).json({ error: 'Nombre y contraseña son obligatorios' });
+  }
+  try {
+    const password_hash = await bcrypt.hash(password, 10);
+    const result = await pool.query(
+      'INSERT INTO cliente (nombre, password_hash, direccion, telefono, profesion) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [nombre, password_hash, direccion, telefono, profesion]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error("❌ Error al crear cliente:", error);
+    res.status(500).json({ error: 'Error al crear cliente' });
+  }
+});
+
+app.get('/api/owner/clientes', verificarToken, async (req, res) => {
+  if (req.user.role !== 'owner') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo el owner puede ver todos los clientes.' });
+  }
+  try {
+    const result = await pool.query('SELECT * FROM cliente ORDER BY id DESC');
+    res.json(result.rows);
+  } catch (error) {
+    console.error("❌ Error al obtener clientes:", error);
+    res.status(500).json({ error: 'Error al obtener clientes' });
+  }
+});
+
+app.delete('/api/clientes/:id', verificarToken, async (req, res) => {
+  if (req.user.role !== 'owner') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo el owner puede eliminar clientes.' });
+  }
+  const { id } = req.params;
+  try {
+    const result = await pool.query('DELETE FROM cliente WHERE id = $1 RETURNING *', [id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Cliente no encontrado' });
+    }
+    res.json({ message: 'Cliente eliminado correctamente', cliente: result.rows[0] });
+  } catch (error) {
+    console.error("❌ Error al eliminar cliente:", error);
+    res.status(500).json({ error: 'Error al eliminar cliente' });
+  }
+});
+
+app.put('/api/clientes/:id', verificarToken, async (req, res) => {
+  if (req.user.role !== 'owner') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo el owner puede editar clientes.' });
+  }
+  const { id } = req.params;
+  const { nombre, password, direccion, telefono, profesion } = req.body;
+  if (!nombre) {
+    return res.status(400).json({ error: 'El nombre es obligatorio' });
+  }
+  try {
+    let query, values;
+    if (password) {
+      const password_hash = await bcrypt.hash(password, 10);
+      query = `UPDATE cliente 
+               SET nombre = $1, password_hash = $2, direccion = $3, telefono = $4, profesion = $5 
+               WHERE id = $6 RETURNING *`;
+      values = [nombre, password_hash, direccion, telefono, profesion, id];
+    } else {
+      query = `UPDATE cliente 
+               SET nombre = $1, direccion = $2, telefono = $3, profesion = $4 
+               WHERE id = $5 RETURNING *`;
+      values = [nombre, direccion, telefono, profesion, id];
+    }
+    const result = await pool.query(query, values);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Cliente no encontrado' });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("❌ Error al editar cliente:", error);
+    res.status(500).json({ error: 'Error al editar cliente' });
+  }
+});
+
+app.get('/api/owner/pacientes', verificarToken, async (req, res) => {
+  if (req.user.role !== 'owner') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo el owner puede ver todos los pacientes.' });
+  }
+  try {
+    const pacientesResult = await pool.query('SELECT * FROM pacientes ORDER BY id DESC');
+    const citasResult = await pool.query('SELECT * FROM citas');
+    const pacientesConCitas = pacientesResult.rows.map((paciente) => {
+      const citas = citasResult.rows.filter(c => c.paciente_id === paciente.id);
+      return { ...paciente, citas };
+    });
+    res.json(pacientesConCitas);
+  } catch (error) {
+    console.error("❌ Error al obtener pacientes:", error);
+    res.status(500).json({ error: "Error al obtener pacientes" });
+  }
+});
+
+app.get('/api/owner/citas', verificarToken, async (req, res) => {
+  if (req.user.role !== 'owner') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo el owner puede ver todas las citas.' });
+  }
+  try {
+    const citasResult = await pool.query(`
+      SELECT c.*, p.nombre AS paciente, p.email, p.telefono, cl.nombre AS cliente
+      FROM citas c
+      JOIN pacientes p ON c.paciente_id = p.id
+      JOIN cliente cl ON p.cliente_id = cl.id
+      ORDER BY c.fecha DESC
+    `);
+    res.json(citasResult.rows);
+  } catch (error) {
+    console.error("❌ Error al obtener citas:", error);
+    res.status(500).json({ error: "Error al obtener citas" });
+  }
+});
+
+// ────────────────────────────────────────────────
+// ENDPOINTS PARA CLIENTES - PACIENTES Y CITAS
+// ────────────────────────────────────────────────
 app.post('/api/pacientes', verificarToken, async (req, res) => {
+  if (req.user.role !== 'cliente') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo los clientes pueden agregar pacientes.' });
+  }
   const { nombre, email, telefono } = req.body;
   if (!nombre || !email || !telefono) {
     return res.status(400).json({ error: 'Todos los campos son obligatorios' });
   }
   try {
     const result = await pool.query(
-      'INSERT INTO pacientes (nombre, email, telefono) VALUES ($1, $2, $3) RETURNING *',
-      [nombre, email, telefono]
+      'INSERT INTO pacientes (cliente_id, nombre, email, telefono) VALUES ($1, $2, $3, $4) RETURNING *',
+      [req.user.id, nombre, email, telefono]
     );
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -207,12 +407,16 @@ app.post('/api/pacientes', verificarToken, async (req, res) => {
   }
 });
 
-// Obtener todos los pacientes con sus citas abiertas (PROTEGIDO)
 app.get('/api/pacientes', verificarToken, async (req, res) => {
+  if (req.user.role !== 'cliente') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo los clientes pueden ver sus pacientes.' });
+  }
   try {
-    const pacientesResult = await pool.query('SELECT * FROM pacientes ORDER BY id DESC');
+    const pacientesResult = await pool.query(
+      'SELECT * FROM pacientes WHERE cliente_id = $1 ORDER BY id DESC',
+      [req.user.id]
+    );
     const citasResult = await pool.query('SELECT * FROM citas');
-    // Combinar pacientes con sus citas donde estado es 'abierto'
     const pacientesConCitas = pacientesResult.rows.map((paciente) => {
       const citasAbiertas = citasResult.rows.filter(
         (c) => c.paciente_id === paciente.id && c.estado === 'abierto'
@@ -226,26 +430,16 @@ app.get('/api/pacientes', verificarToken, async (req, res) => {
   }
 });
 
-// Obtener el historial de citas cerradas para un paciente (PROTEGIDO)
-app.get('/api/citas/historial/:paciente_id', verificarToken, async (req, res) => {
-  const { paciente_id } = req.params;
-  try {
-    const result = await pool.query(
-      'SELECT * FROM citas WHERE paciente_id = $1 AND estado = $2 ORDER BY fecha DESC',
-      [paciente_id, 'cerrado']
-    );
-    res.json(result.rows);
-  } catch (error) {
-    console.error("❌ Error al obtener historial de citas:", error);
-    res.status(500).json({ error: "Error al obtener historial de citas" });
-  }
-});
-
-// Obtener un paciente por ID (PROTEGIDO)
 app.get('/api/pacientes/:id', verificarToken, async (req, res) => {
+  if (req.user.role !== 'cliente') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo los clientes pueden ver sus pacientes.' });
+  }
   const { id } = req.params;
   try {
-    const result = await pool.query('SELECT * FROM pacientes WHERE id = $1', [id]);
+    const result = await pool.query(
+      'SELECT * FROM pacientes WHERE id = $1 AND cliente_id = $2',
+      [id, req.user.id]
+    );
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Paciente no encontrado' });
     }
@@ -256,8 +450,10 @@ app.get('/api/pacientes/:id', verificarToken, async (req, res) => {
   }
 });
 
-// Actualizar un paciente por ID (PROTEGIDO)
 app.put('/api/pacientes/:id', verificarToken, async (req, res) => {
+  if (req.user.role !== 'cliente') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo los clientes pueden actualizar sus pacientes.' });
+  }
   const { id } = req.params;
   const { nombre, email, telefono } = req.body;
   if (!nombre || !email || !telefono) {
@@ -265,8 +461,8 @@ app.put('/api/pacientes/:id', verificarToken, async (req, res) => {
   }
   try {
     const result = await pool.query(
-      'UPDATE pacientes SET nombre = $1, email = $2, telefono = $3 WHERE id = $4 RETURNING *',
-      [nombre, email, telefono, id]
+      'UPDATE pacientes SET nombre = $1, email = $2, telefono = $3 WHERE id = $4 AND cliente_id = $5 RETURNING *',
+      [nombre, email, telefono, id, req.user.id]
     );
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Paciente no encontrado' });
@@ -278,155 +474,167 @@ app.put('/api/pacientes/:id', verificarToken, async (req, res) => {
   }
 });
 
-// 🔹 Rutas de Citas
+app.delete('/api/pacientes/:id', verificarToken, async (req, res) => {
+  if (req.user.role !== 'cliente') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo los clientes pueden eliminar sus pacientes.' });
+  }
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      'DELETE FROM pacientes WHERE id = $1 AND cliente_id = $2 RETURNING *',
+      [id, req.user.id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Paciente no encontrado' });
+    }
+    res.json({ message: 'Paciente eliminado correctamente', paciente: result.rows[0] });
+  } catch (error) {
+    console.error("❌ Error al eliminar paciente:", error);
+    res.status(500).json({ error: 'Error al eliminar paciente' });
+  }
+});
 
-// Función para formatear fecha:
-function formatearFecha(fechaISO) {
-  const dateObj = new Date(fechaISO);
-  const day = dateObj.getDate();
-  const monthIndex = dateObj.getMonth();
-  const year = dateObj.getFullYear();
-  const meses = [
-    'enero', 'febrero', 'marzo', 'abril',
-    'mayo', 'junio', 'julio', 'agosto',
-    'septiembre', 'octubre', 'noviembre', 'diciembre'
-  ];
-  return `${day} de ${meses[monthIndex]} del ${year}`;
-}
-
-// Agendar una cita (PROTEGIDO) – incluye envío de correo en HTML
-// Se asume que la columna "asistio" se inicializa en NULL para citas pendientes y "estado" es 'abierto'
 app.post('/api/citas', verificarToken, async (req, res) => {
+  if (req.user.role !== 'cliente') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo los clientes pueden agendar citas.' });
+  }
   const { paciente_id, fecha, hora, notas } = req.body;
   if (!paciente_id || !fecha || !hora) {
     return res.status(400).json({ error: 'Paciente, fecha y hora son obligatorios' });
   }
-  // Verificar que el paciente no tenga ya una cita pendiente (estado = 'abierto')
-  const citaExistente = await pool.query(
-    'SELECT * FROM citas WHERE paciente_id = $1 AND estado = $2',
-    [paciente_id, 'abierto']
-  );
-  if (citaExistente.rows.length > 0) {
-    return res.status(400).json({ error: 'El paciente ya tiene una cita pendiente' });
-  }
-  // Verificar que la fecha sea posterior a hoy
-  const hoy = new Date();
-  hoy.setHours(0, 0, 0, 0);
-  const fechaCita = new Date(fecha);
-  if (fechaCita <= hoy) {
-    return res.status(400).json({ error: 'La cita debe ser agendada para un día posterior a hoy' });
-  }
   try {
-    // Generar un token único para el enlace de recordatorio
-    const tokenConfirmacion = crypto.randomBytes(20).toString('hex');
-    // Insertar la cita en la BD (confirmada: false, asistio: NULL, estado: 'abierto')
+    const pacienteVerificado = await pool.query(
+      'SELECT * FROM pacientes WHERE id = $1 AND cliente_id = $2',
+      [paciente_id, req.user.id]
+    );
+    if (pacienteVerificado.rowCount === 0) {
+      return res.status(403).json({ error: 'No tienes permisos para asignar una cita a este paciente' });
+    }
+    const citaExistente = await pool.query(
+      'SELECT * FROM citas WHERE paciente_id = $1 AND estado = $2',
+      [paciente_id, 'abierto']
+    );
+    if (citaExistente.rows.length > 0) {
+      return res.status(400).json({ error: 'El paciente ya tiene una cita pendiente' });
+    }
+    const hoy = new Date();
+    hoy.setHours(0, 0, 0, 0);
+    const fechaCita = new Date(fecha);
+    if (fechaCita <= hoy) {
+      return res.status(400).json({ error: 'La cita debe ser agendada para un día posterior a hoy' });
+    }
     const result = await pool.query(
-      'INSERT INTO citas (paciente_id, fecha, hora, notas, confirmada, asistio, estado, tokenConfirmacion) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
-      [paciente_id, fecha, hora, notas || '', false, null, 'abierto', tokenConfirmacion]
+      'INSERT INTO citas (paciente_id, fecha, hora, notas, asistio, estado) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [paciente_id, fecha, hora, notas || '', null, 'abierto']
     );
     const nuevaCita = result.rows[0];
-    // Obtener email y nombre del paciente
-    const pacienteResult = await pool.query('SELECT email, nombre FROM pacientes WHERE id = $1', [paciente_id]);
-    const { email, nombre } = pacienteResult.rows[0];
-    // Formatear la fecha
-    const fechaFormateada = formatearFecha(fecha);
-    // Generar enlace de WhatsApp para problemas (mensaje predefinido)
-    const mensaje = encodeURIComponent(`Hola, buenas. Soy ${nombre}, desafortunadamente no puedo asistir a mi cita programada para el ${fechaFormateada} a las ${hora}.`);
-    const waLink = `https://wa.me/59891014583?text=${mensaje}`;
-    // Enviar correo de aviso de nueva cita HTML con imagen de ejemplo y enlace a WhatsApp
+    const pacienteResult = await pool.query(`
+      SELECT p.email, p.nombre AS paciente_nombre, cl.nombre AS cliente_nombre, 
+             cl.direccion, cl.telefono, cl.profesion 
+      FROM pacientes p 
+      JOIN cliente cl ON p.cliente_id = cl.id 
+      WHERE p.id = $1
+    `, [paciente_id]);
+    if (pacienteResult.rowCount === 0) {
+      return res.status(404).json({ error: 'Paciente no encontrado' });
+    }
+    const { email, paciente_nombre, cliente_nombre, direccion, telefono, profesion } = pacienteResult.rows[0];
+    const fechaFormateada = (() => {
+      const dateObj = new Date(fecha);
+      const day = dateObj.getDate();
+      const monthIndex = dateObj.getMonth();
+      const year = dateObj.getFullYear();
+      const meses = [
+        'enero', 'febrero', 'marzo', 'abril',
+        'mayo', 'junio', 'julio', 'agosto',
+        'septiembre', 'octubre', 'noviembre', 'diciembre'
+      ];
+      return `${day} de ${meses[monthIndex]} del ${year}`;
+    })();
     const htmlCorreo = `
-      <!DOCTYPE html>
-      <html lang="es">
-      <head>
-        <meta charset="UTF-8" />
-        <style>
-          body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 0; }
-          .container { max-width: 600px; margin: 40px auto; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 20px; }
-          .header { text-align: center; padding-bottom: 20px; border-bottom: 1px solid #eee; }
-          .header h2 { margin: 0; color: #1976d2; }
-          .content { padding: 20px 0; }
-          .content p { margin: 10px 0; font-size: 16px; }
-          .footer { text-align: center; padding-top: 20px; border-top: 1px solid #eee; font-size: 14px; color: #777; }
-          .btn-wa { display: inline-block; background-color: #25D366; color: #fff; padding: 12px 24px; margin-top: 20px; text-decoration: none; border-radius: 4px; font-weight: bold; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h2>Cita agendada</h2>
-            <img src="https://i.pinimg.com/736x/6f/7d/4a/6f7d4a5cca96ff31d058b8c41700b7f7.jpg" alt="Logo" style="max-width:150px;" />
-          </div>
-          <div class="content">
-            <p><strong>Paciente:</strong> ${nombre}</p>
-            <p><strong>Fecha:</strong> ${fechaFormateada}</p>
-            <p><strong>Hora:</strong> ${hora} hrs</p>
-            <p><strong>Profesional:</strong> Pepe Rodriguez</p>
-            <p><strong>Dirección:</strong> Avenida 8 de Octubre 2331, B, Montevideo</p>
-            <p><strong>Teléfono de contacto:</strong> +59891014583</p>
-          </div>
-          <div class="footer">
-            <p>Si tienes algún inconveniente, comunícate vía WhatsApp:</p>
-            <a href="${waLink}" class="btn-wa">Contactar WhatsApp</a>
-          </div>
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Cita agendada</title>
+  <style>
+    body, p, h2, h3 { margin: 0; padding: 0; }
+    body { 
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; 
+      background: #f9fafb; 
+      color: #444; 
+      line-height: 1.6;
+      padding: 20px;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      overflow: hidden;
+    }
+    .header {
+      background: linear-gradient(135deg, #1976d2, #2196f3);
+      text-align: center;
+      padding: 30px 20px;
+      color: #fff;
+    }
+    .header h2 { font-size: 28px; font-weight: 700; }
+    .header img { margin-top: 10px; max-width: 80px; }
+    .content { padding: 30px 20px; }
+    .content p { margin-bottom: 16px; font-size: 16px; }
+    .details { margin: 20px 0; border-top: 1px solid #e0e0e0; border-bottom: 1px solid #e0e0e0; }
+    .details-item { display: flex; justify-content: space-between; padding: 12px 0; }
+    .details-item span { font-size: 15px; }
+    .details-item .label { color: #888; }
+    .footer { text-align: center; font-size: 14px; color: #999; padding: 20px; background: #fafafa; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>Cita agendada</h2>
+      <img src="https://icon-icons.com/icons2/624/PNG/512/Planner-80_icon-icons.com_57289.png" alt="Logo" />
+    </div>
+    <div class="content">
+      <p><strong>Paciente:</strong> ${paciente_nombre}</p>
+      <div class="details">
+        <div class="details-item">
+          <span class="label">Fecha:</span>
+          <span class="value">${fechaFormateada}</span>
         </div>
-      </body>
-      </html>
-    `;
+        <div class="details-item">
+          <span class="label">Hora:</span>
+          <span class="value">${hora} hs</span>
+        </div>
+        <div class="details-item">
+          <span class="label">Profesional:</span>
+          <span class="value">${profesion} ${cliente_nombre}</span>
+        </div>
+        <div class="details-item">
+          <span class="label">Dirección:</span>
+          <span class="value">${direccion}</span>
+        </div>
+        <div class="details-item">
+          <span class="label">Teléfono:</span>
+          <span class="value">${telefono}</span>
+        </div>
+      </div>
+    </div>
+    <div class="footer">
+      <p>Gracias por confiar en nosotros.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
     await enviarCorreo({
       from: process.env.EMAIL_USER,
       to: email,
       subject: 'Cita agendada',
       html: htmlCorreo
     });
-
-    // MODO DE PRUEBA: Enviar recordatorio 5 minutos después de la reserva
-    if (process.env.TEST_MODE === 'true') {
-      setTimeout(async () => {
-        const mensajeTest = encodeURIComponent(`Hola, buenas. Soy ${nombre}, este es un recordatorio de prueba para mi cita programada para el ${fechaFormateada} a las ${hora}.`);
-        const waLinkTest = `https://wa.me/59891014583?text=${mensajeTest}`;
-        const htmlTest = `
-          <!DOCTYPE html>
-          <html lang="es">
-          <head>
-            <meta charset="UTF-8" />
-            <style>
-              body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 0; }
-              .container { max-width: 600px; margin: 40px auto; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 20px; }
-              .header { text-align: center; padding-bottom: 20px; border-bottom: 1px solid #eee; }
-              .header h2 { margin: 0; color: #1976d2; }
-              .content { padding: 20px 0; }
-              .content p { margin: 10px 0; font-size: 16px; }
-              .footer { text-align: center; padding-top: 20px; border-top: 1px solid #eee; font-size: 14px; color: #777; }
-              .btn-wa { display: inline-block; background-color: #25D366; color: #fff; padding: 12px 24px; margin-top: 20px; text-decoration: none; border-radius: 4px; font-weight: bold; }
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <div class="header">
-                <h2>Recordatorio de Cita (Prueba)</h2>
-              </div>
-              <div class="content">
-                <p>Hola <strong>${nombre}</strong>,</p>
-                <p>Este es un recordatorio de prueba para tu cita programada para el ${fechaFormateada} a las ${hora}.</p>
-                <p>Si tienes algún inconveniente, comunícate vía WhatsApp:</p>
-              </div>
-              <div class="footer">
-                <a href="${waLinkTest}" class="btn-wa">Contactar WhatsApp</a>
-              </div>
-            </div>
-          </body>
-          </html>
-        `;
-        await enviarCorreo({
-          from: process.env.EMAIL_USER,
-          to: email,
-          subject: 'Recordatorio de Cita (Prueba)',
-          html: htmlTest
-        });
-        console.log("✅ Recordatorio de prueba enviado a:", email);
-      }, 5 * 60 * 1000); // 5 minutos
-    }
-
     res.status(201).json(nuevaCita);
   } catch (error) {
     console.error("❌ Error al agendar cita:", error);
@@ -434,27 +642,10 @@ app.post('/api/citas', verificarToken, async (req, res) => {
   }
 });
 
-// (Opcional) Endpoint para confirmación o cancelación de cita por el dentista (PROTEGIDO)
-app.post('/api/citas/:id/confirmar', verificarToken, async (req, res) => {
-  const { id } = req.params;
-  const { confirmar } = req.body;
-  if (confirmar === undefined) {
-    return res.status(400).json({ error: 'Se requiere el estado de confirmación' });
-  }
-  try {
-    const result = await pool.query(
-      'UPDATE citas SET confirmada = $1, estado = $2 WHERE id = $3 RETURNING *',
-      [confirmar, 'cerrado', id]
-    );
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error("❌ Error al actualizar cita:", error);
-    res.status(500).json({ error: 'Error al actualizar cita' });
-  }
-});
-
-// Actualizar asistencia (PROTEGIDO)
 app.put('/api/citas/:id/asistencia', verificarToken, async (req, res) => {
+  if (req.user.role !== 'cliente') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo los clientes pueden actualizar asistencia.' });
+  }
   const { id } = req.params;
   const { asistio } = req.body;
   if (asistio === undefined) {
@@ -462,8 +653,12 @@ app.put('/api/citas/:id/asistencia', verificarToken, async (req, res) => {
   }
   try {
     const result = await pool.query(
-      'UPDATE citas SET asistio = $1, estado = $2 WHERE id = $3 RETURNING *',
-      [asistio, 'cerrado', id]
+      `UPDATE citas 
+       SET asistio = $1, estado = $2 
+       WHERE id = $3 
+         AND paciente_id IN (SELECT id FROM pacientes WHERE cliente_id = $4)
+       RETURNING *`,
+      [asistio, 'cerrado', id, req.user.id]
     );
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Cita no encontrada' });
@@ -475,28 +670,140 @@ app.put('/api/citas/:id/asistencia', verificarToken, async (req, res) => {
   }
 });
 
-// Eliminar (cancelar) una cita (PROTEGIDO)
 app.delete('/api/citas/:id', verificarToken, async (req, res) => {
+  if (req.user.role !== 'cliente') {
+    return res.status(403).json({ error: 'Acceso denegado. Solo los clientes pueden eliminar sus citas.' });
+  }
   const { id } = req.params;
+  const { motivo } = req.body;
   try {
-    const result = await pool.query('DELETE FROM citas WHERE id = $1 RETURNING *', [id]);
+    const citaInfo = await pool.query(`
+      SELECT c.id, c.fecha, c.hora, p.email, p.nombre AS paciente_nombre
+      FROM citas c
+      JOIN pacientes p ON c.paciente_id = p.id
+      WHERE c.id = $1
+        AND p.cliente_id = $2
+        AND c.estado = 'abierto'
+    `, [id, req.user.id]);
+    if (citaInfo.rowCount === 0) {
+      return res.status(404).json({ error: 'Cita no encontrada o ya cerrada' });
+    }
+    const { fecha, hora, email, paciente_nombre } = citaInfo.rows[0];
+    const result = await pool.query(
+      `DELETE FROM citas
+       WHERE id = $1 
+         AND paciente_id IN (SELECT id FROM pacientes WHERE cliente_id = $2)
+       RETURNING *`,
+      [id, req.user.id]
+    );
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Cita no encontrada' });
     }
     console.log(`✅ Cita con ID ${id} eliminada correctamente.`);
-    res.json({ message: 'Cita eliminada correctamente' });
+    const asunto = 'Tu cita ha sido cancelada';
+    const htmlCancelacion = `
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+      <meta charset="UTF-8" />
+      <title>Cita Cancelada</title>
+      <style>
+        body {
+          margin: 0;
+          padding: 0;
+          font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+          background-color: #f5f5f5;
+          color: #333;
+        }
+        .container {
+          max-width: 600px;
+          margin: 40px auto;
+          background: #fff;
+          border-radius: 10px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+          overflow: hidden;
+        }
+        .header {
+          background: linear-gradient(135deg, #d32f2f, #f44336);
+          padding: 25px;
+          text-align: center;
+          color: #fff;
+        }
+        .header h2 { margin: 0; font-size: 24px; }
+        .content { padding: 25px 30px; }
+        .content p { margin-bottom: 16px; font-size: 16px; }
+        .footer {
+          text-align: center;
+          font-size: 14px;
+          color: #777;
+          padding: 15px;
+          border-top: 1px solid #eee;
+          background-color: #fafafa;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h2>Cita Cancelada</h2>
+        </div>
+        <div class="content">
+          <p>Estimado/a <strong>${paciente_nombre}</strong>,</p>
+          <p>Te informamos que tu cita programada para la fecha <strong>${fecha.toISOString().split('T')[0]}</strong> 
+          a las <strong>${hora}hs</strong> ha sido cancelada.</p>
+          <p><strong>Motivo:</strong> ${motivo || 'Sin especificar'}</p>
+          <p>Si tienes alguna duda, por favor contáctanos. Gracias por utilizar nuestro servicio.</p>
+        </div>
+        <div class="footer">
+          <p>Atentamente,</p>
+          <p>El equipo de Citas</p>
+        </div>
+      </div>
+    </body>
+    </html>
+    `;
+    await enviarCorreo({
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: asunto,
+      html: htmlCancelacion,
+    });
+    res.json({ 
+      message: 'Cita eliminada correctamente', 
+      motivoRecibido: motivo || '(No se proporcionó motivo)' 
+    });
   } catch (error) {
     console.error("❌ Error al eliminar la cita:", error);
     res.status(500).json({ error: 'Error al eliminar la cita' });
   }
 });
 
-// 🔹 Endpoint para verificar que el servidor tenga rutas activas
+
+
+app.get('/api/citas/historial/:paciente_id', verificarToken, async (req, res) => {
+  const { paciente_id } = req.params;
+  try {
+    const result = await pool.query(
+      'SELECT * FROM citas WHERE paciente_id = $1 AND estado = $2 ORDER BY fecha DESC',
+      [paciente_id, 'cerrado']
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error("❌ Error al obtener historial de citas:", error);
+    res.status(500).json({ error: 'Error al obtener historial de citas' });
+  }
+});
+
+// ────────────────────────────────────────────────
+// Endpoint para verificar que el servidor esté activo
+// ────────────────────────────────────────────────
 app.get('/api', (req, res) => {
   res.send("🟢 API funcionando correctamente");
 });
 
-// 🔹 Iniciar el servidor
+// ────────────────────────────────────────────────
+// Iniciar el servidor
+// ────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor corriendo en el puerto ${PORT}`);
